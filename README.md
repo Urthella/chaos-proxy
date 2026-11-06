@@ -3,7 +3,7 @@
 [![ci](https://github.com/Urthella/chaos-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/Urthella/chaos-proxy/actions/workflows/ci.yml)
 
 A TCP proxy that makes the network worse on purpose: latency, jitter, a bandwidth limit, dropped
-connections and partitions, all changeable while it runs. Put it between a client and a service
+connections, cut connections and partitions, all changeable while it runs. Put it between a client and a service
 to see how they cope. Plain Rust, no dependencies.
 
 ```bash
@@ -13,7 +13,7 @@ cargo run --release -- 127.0.0.1:9000 127.0.0.1:8080 --latency 50ms --jitter 10m
 Then type to change the faults while it runs:
 
 ```
-latency 100ms   jitter 20ms   bandwidth 1mb   bandwidth off   drop 0.2
+latency 100ms   jitter 20ms   bandwidth 1mb   bandwidth off   drop 0.2   cut 0.01
 partition on    partition off   show   stats
 ```
 
@@ -45,6 +45,7 @@ after retransmitting.
 | `--jitter 10ms` | Adds up to that much more per chunk, at random. Data still arrives in order. |
 | `--bandwidth 500kb` | Limits each direction of each connection to that many bytes a second. |
 | `--drop 0.1` | Closes that fraction of new connections as soon as they're accepted. |
+| `--cut 0.01` | Gives each chunk that chance of cutting its connection instead of going through, both ways at once, as when a load balancer or NAT forgets a connection. Std can't send a TCP reset, so both sides see the connection end rather than a reset error. |
 | `partition on` | Stops all data, and new connections wait without reaching the upstream, until `partition off`. |
 
 As a library, `Proxy::start(listen, upstream, faults)` returns a handle whose `set` changes the
@@ -55,13 +56,14 @@ faults for connections that are already open, so a test can cut the network at t
 The tests run the proxy in front of a real echo server and measure each fault: 4 MB comes back
 unchanged, 50 ms of latency adds 100 ms to a round trip, 300 numbered messages with heavy jitter
 come back in order, 300 KB at 200 KB a second takes about 1.5 s, half the connections are dropped
-at a chance of 0.5, and during a partition neither data nor new connections reach the upstream.
+at a chance of 0.5, a cut ends a connection for the client within a moment, and during a partition
+neither data nor new connections reach the upstream.
 
-To check that the tests can fail, 10 bugs were planted one at a time, and every one was caught:
+To check that the tests can fail, 12 bugs were planted one at a time, and every one was caught:
 among them, data flowing during a partition, new connections reaching the upstream during one, and
 the half-close not being passed on, which left the other side waiting for data that would never come.
 
-Writing the tests also showed three pieces of logic that never decided anything, so they were
+Writing the tests also showed four pieces of logic that never decided anything, so they were
 deleted. The main one kept each chunk's due time after the one before it so jitter couldn't
 reorder data, but the writer delivers chunks in the order they were read anyway.
 

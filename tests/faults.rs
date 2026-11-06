@@ -291,3 +291,40 @@ fn an_unreachable_upstream_closes_the_client() {
     let result = stream.write_all(b"x").and_then(|_| stream.read(&mut buf));
     assert!(matches!(result, Ok(0) | Err(_)), "{result:?}");
 }
+
+#[test]
+fn a_cut_ends_the_connection_both_ways() {
+    let _turn = one_at_a_time();
+    let p = proxy(Faults {
+        cut: 1.0,
+        ..Faults::default()
+    });
+    let mut stream = connect(&p);
+    stream.write_all(b"x").unwrap();
+    let mut buf = [0u8; 1];
+    let started = Instant::now();
+    let result = stream.read(&mut buf);
+    assert!(matches!(result, Ok(0) | Err(_)), "{result:?}");
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert_eq!(p.stats.cuts.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+    // At a chance of 0.2 a chunk, a run of round trips gets cut before long.
+    p.set(Faults {
+        cut: 0.2,
+        ..Faults::default()
+    });
+    let mut stream = connect(&p);
+    let mut answered = 0;
+    for _ in 0..100 {
+        let mut byte = [0u8];
+        if stream
+            .write_all(b"x")
+            .and_then(|_| stream.read_exact(&mut byte))
+            .is_err()
+        {
+            break;
+        }
+        answered += 1;
+    }
+    assert!(answered < 50, "{answered} round trips before a cut");
+}
