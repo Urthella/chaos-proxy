@@ -1,0 +1,9 @@
+[package]
+name = "chaos-proxy"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "A TCP proxy that adds latency, jitter, bandwidth limits, dropped connections and partitions, changeable while it runs"
+repository = "https://github.com/Urthella/chaos-proxy"
+
+[dependencies]
