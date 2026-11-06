@@ -5,12 +5,12 @@ use std::sync::atomic::Ordering;
 
 use chaos_proxy::{Faults, Proxy, parse_duration, parse_rate};
 
-const USAGE: &str = "usage: chaos-proxy LISTEN UPSTREAM [--latency 50ms] [--jitter 10ms] [--bandwidth 500kb] [--drop 0.1]
+const USAGE: &str = "usage: chaos-proxy LISTEN UPSTREAM [--latency 50ms] [--jitter 10ms] [--bandwidth 500kb] [--drop 0.1] [--cut 0.01]
 
   chaos-proxy 127.0.0.1:9000 127.0.0.1:8080 --latency 50ms
 
 Then type commands to change the faults while it runs:
-  latency 100ms   jitter 20ms   bandwidth 1mb   bandwidth off   drop 0.2
+  latency 100ms   jitter 20ms   bandwidth 1mb   bandwidth off   drop 0.2   cut 0.01
   partition on    partition off   show   stats";
 
 /// Applies one `name value` setting to the faults.
@@ -31,6 +31,13 @@ fn apply(faults: &mut Faults, name: &str, value: &str) -> Result<(), String> {
                 .ok()
                 .filter(|p| (0.0..=1.0).contains(p))
                 .ok_or(format!("drop is a chance from 0 to 1, not {value}"))?
+        }
+        "cut" => {
+            faults.cut = value
+                .parse()
+                .ok()
+                .filter(|p| (0.0..=1.0).contains(p))
+                .ok_or(format!("cut is a chance from 0 to 1, not {value}"))?
         }
         "partition" => {
             faults.partition = match value {
@@ -91,9 +98,10 @@ fn main() -> ExitCode {
             [] => {}
             ["show"] => println!("{:?}", proxy.faults()),
             ["stats"] => println!(
-                "{} connections, {} dropped, {} bytes",
+                "{} connections, {} dropped, {} cut, {} bytes",
                 proxy.stats.accepted.load(Ordering::Relaxed),
                 proxy.stats.dropped.load(Ordering::Relaxed),
+                proxy.stats.cuts.load(Ordering::Relaxed),
                 proxy.stats.bytes.load(Ordering::Relaxed)
             ),
             [name, value] => {
@@ -106,7 +114,9 @@ fn main() -> ExitCode {
                     Err(e) => println!("{e}"),
                 }
             }
-            _ => println!("commands: latency, jitter, bandwidth, drop, partition, show, stats"),
+            _ => {
+                println!("commands: latency, jitter, bandwidth, drop, cut, partition, show, stats")
+            }
         }
     }
     // Without a terminal, keep running until stopped.
@@ -125,7 +135,7 @@ mod tests {
     #[test]
     fn options() {
         let (listen, upstream, f) = parse(&args(
-            "127.0.0.1:9000 127.0.0.1:8080 --latency 50ms --jitter 1s --bandwidth 2mb --drop 0.25",
+            "127.0.0.1:9000 127.0.0.1:8080 --latency 50ms --jitter 1s --bandwidth 2mb --drop 0.25 --cut 0.05",
         ))
         .unwrap();
         assert_eq!(
@@ -134,9 +144,10 @@ mod tests {
         );
         assert_eq!(f.latency, std::time::Duration::from_millis(50));
         assert_eq!(
-            (f.bandwidth, f.drop, f.partition),
-            (Some(2 * 1024 * 1024), 0.25, false)
+            (f.bandwidth, f.drop, f.partition, f.cut),
+            (Some(2 * 1024 * 1024), 0.25, false, 0.05)
         );
+        assert!(parse(&args("a b --cut 1.5")).is_err());
         for bad in [
             "a",
             "a b --latency",

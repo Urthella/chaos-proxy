@@ -23,6 +23,10 @@ pub struct Faults {
     /// While set, no data moves and new connections wait, as if the network were cut. What was
     /// sent meanwhile arrives when it's lifted, as TCP would deliver it after retransmitting.
     pub partition: bool,
+    /// The chance, from 0 to 1, that a chunk cuts its connection instead of going through,
+    /// closing both directions at once, as when a load balancer or NAT forgets the connection.
+    /// Std can't send a TCP reset, so both sides see the connection end rather than a reset error.
+    pub cut: f64,
 }
 
 /// Counts of what the proxy did, since it started.
@@ -31,6 +35,7 @@ pub struct Stats {
     pub accepted: AtomicU64,
     pub dropped: AtomicU64,
     pub bytes: AtomicU64,
+    pub cuts: AtomicU64,
 }
 
 pub struct Proxy {
@@ -147,6 +152,7 @@ fn pipe(
     // control would hold it, instead of filling memory: 64 chunks of up to 16 KB.
     let (tx, rx) = mpsc::sync_channel::<(Instant, Vec<u8>)>(64);
     let reader_faults = faults.clone();
+    let mut cut = Rng(rng.0.rotate_left(32) | 1);
     let reader = thread::spawn(move || {
         let mut buf = vec![0u8; 16 * 1024];
         loop {
@@ -171,6 +177,13 @@ fn pipe(
             thread::sleep(Duration::from_millis(10));
         }
         if chunk.is_empty() {
+            break;
+        }
+        if cut.unit() < read_faults(faults).cut {
+            stats.cuts.fetch_add(1, Ordering::Relaxed);
+            // Closing this side ends the other direction too, and once this loop stops, the
+            // reader's next send fails and its socket is dropped.
+            let _ = to.shutdown(Shutdown::Both);
             break;
         }
         if let Some(rate) = read_faults(faults).bandwidth {
